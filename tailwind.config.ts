@@ -61,6 +61,13 @@ export default {
 					'accent-foreground': 'hsl(var(--sidebar-accent-foreground))',
 					border: 'hsl(var(--sidebar-border))',
 					ring: 'hsl(var(--sidebar-ring))'
+				},
+				streaming: {
+					coral: 'hsl(var(--streaming-coral))',
+					teal: 'hsl(var(--streaming-teal))',
+					dark: 'hsl(var(--streaming-dark))',
+					card: 'hsl(var(--streaming-card))',
+					border: 'hsl(var(--streaming-border))'
 				}
 			},
 			borderRadius: {
