@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -6,7 +6,15 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { toast } from '@/hooks/use-toast';
 import Icon from '@/components/ui/icon';
+import { VideoParser, type VideoInfo } from '@/lib/video-parser';
+import { RoomManager, type Room, type RoomUser } from '@/lib/room-manager';
+import { VoiceChat, type VoiceUser } from '@/lib/voice-chat';
 
 const Index = () => {
   const [videoUrl, setVideoUrl] = useState('');
@@ -14,6 +22,24 @@ const Index = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [volume, setVolume] = useState(80);
+  const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
+  const [currentVideo, setCurrentVideo] = useState<VideoInfo | null>(null);
+  const [isLoadingVideo, setIsLoadingVideo] = useState(false);
+  const [showCreateRoom, setShowCreateRoom] = useState(false);
+  const [roomName, setRoomName] = useState('');
+  const [roomDescription, setRoomDescription] = useState('');
+  const [isPrivateRoom, setIsPrivateRoom] = useState(false);
+  const [inviteLink, setInviteLink] = useState('');
+  
+  // Voice chat state
+  const [voiceChat, setVoiceChat] = useState<VoiceChat | null>(null);
+  const [isVoiceConnected, setIsVoiceConnected] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [voiceUsers, setVoiceUsers] = useState<VoiceUser[]>([]);
+  
+  const videoRef = useRef<HTMLDivElement>(null);
+  
+  const currentUser = { id: 'user1', name: 'Вы' };
 
   const mockPlaylist = [
     { id: 1, title: 'Атака титанов - 1 сезон', duration: '24:30', thumbnail: '🎬', status: 'playing' },
@@ -42,6 +68,184 @@ const Index = () => {
     { id: 3, name: 'Марвел-марафон', viewers: 15, current: 'Перерыв', isLive: false }
   ];
 
+  // Video handling functions
+  const handleAddVideo = async () => {
+    if (!videoUrl.trim()) return;
+    
+    setIsLoadingVideo(true);
+    try {
+      const result = await VideoParser.parseVideoUrl(videoUrl.trim());
+      
+      if (result.isValid && result.videoInfo) {
+        setCurrentVideo(result.videoInfo);
+        
+        // Update video in current room if exists
+        if (currentRoom) {
+          RoomManager.updateRoomVideo(currentRoom.id, currentUser.id, result.videoInfo);
+        }
+        
+        toast({
+          title: "Видео добавлено",
+          description: `"${result.videoInfo.title}" готово к просмотру`
+        });
+        
+        setVideoUrl('');
+      } else {
+        toast({
+          title: "Ошибка",
+          description: result.error || "Не удалось обработать ссылку",
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Ошибка",
+        description: "Произошла ошибка при обработке ссылки",
+        variant: "destructive"
+      });
+    } finally {
+      setIsLoadingVideo(false);
+    }
+  };
+
+  // Room management functions
+  const handleCreateRoom = () => {
+    if (!roomName.trim()) return;
+    
+    const newRoom = RoomManager.createRoom(currentUser.id, currentUser.name, {
+      name: roomName,
+      description: roomDescription,
+      isPrivate: isPrivateRoom
+    });
+    
+    setCurrentRoom(newRoom);
+    setShowCreateRoom(false);
+    setRoomName('');
+    setRoomDescription('');
+    setIsPrivateRoom(false);
+    
+    toast({
+      title: "Комната создана",
+      description: `Комната "${newRoom.name}" успешно создана`
+    });
+  };
+
+  const handleJoinRoom = (roomId: string, roomName: string) => {
+    const result = RoomManager.joinRoom(currentUser.id, currentUser.name, roomId.toString());
+    
+    if (result.success && result.room) {
+      setCurrentRoom(result.room);
+      toast({
+        title: "Вы вошли в комнату",
+        description: `Добро пожаловать в "${roomName}"`
+      });
+    } else {
+      toast({
+        title: "Ошибка",
+        description: result.error || "Не удалось войти в комнату",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleShareRoom = async () => {
+    if (!currentRoom) return;
+    
+    const link = RoomManager.generateInviteLink(currentRoom.id, currentUser.id);
+    if (link) {
+      setInviteLink(link);
+      await navigator.clipboard.writeText(link);
+      toast({
+        title: "Ссылка скопирована",
+        description: "Ссылка-приглашение скопирована в буфер обмена"
+      });
+    }
+  };
+
+  // Voice chat functions
+  const handleVoiceToggle = async () => {
+    if (!currentRoom) {
+      toast({
+        title: "Ошибка",
+        description: "Сначала войдите в комнату",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (!isVoiceConnected) {
+      const newVoiceChat = new VoiceChat(currentRoom.id, currentUser.id);
+      
+      newVoiceChat.setEventHandlers({
+        onUserJoined: (user) => {
+          setVoiceUsers(prev => [...prev, user]);
+        },
+        onUserLeft: (userId) => {
+          setVoiceUsers(prev => prev.filter(u => u.id !== userId));
+        },
+        onUserMuted: (userId, isMuted) => {
+          setVoiceUsers(prev => prev.map(u => 
+            u.id === userId ? { ...u, isMuted } : u
+          ));
+        },
+        onSpeakingChanged: (userId, isSpeaking) => {
+          setVoiceUsers(prev => prev.map(u => 
+            u.id === userId ? { ...u, isSpeaking } : u
+          ));
+        }
+      });
+      
+      const connected = await newVoiceChat.joinVoiceChat();
+      if (connected) {
+        setVoiceChat(newVoiceChat);
+        setIsVoiceConnected(true);
+        toast({
+          title: "Голосовой чат",
+          description: "Подключено к голосовому чату"
+        });
+      } else {
+        toast({
+          title: "Ошибка",
+          description: "Не удалось подключиться к голосовому чату",
+          variant: "destructive"
+        });
+      }
+    } else {
+      // Toggle mute
+      if (voiceChat) {
+        const muted = voiceChat.toggleMute();
+        setIsMuted(muted);
+      }
+    }
+  };
+
+  // Render video player content
+  const renderVideoPlayer = () => {
+    if (currentVideo) {
+      return (
+        <div 
+          ref={videoRef}
+          className="w-full h-full"
+          dangerouslySetInnerHTML={{ 
+            __html: VideoParser.getEmbedHtml(currentVideo) 
+          }}
+        />
+      );
+    }
+    
+    return (
+      <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-streaming-coral/20 to-streaming-teal/20">
+        <div className="text-center space-y-4">
+          <Icon name="Play" size={64} className="text-white/60 mx-auto" />
+          <p className="text-white/80">Загрузите видео для начала просмотра</p>
+          {currentRoom && (
+            <p className="text-white/60 text-sm">Комната: {currentRoom.name}</p>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-background text-foreground p-4">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -60,10 +264,64 @@ const Index = () => {
               <Icon name="Users" size={14} className="mr-1" />
               32 онлайн
             </Badge>
-            <Button size="sm" className="bg-streaming-coral hover:bg-streaming-coral/90">
-              <Icon name="Plus" size={16} className="mr-2" />
-              Создать комнату
-            </Button>
+            <Dialog open={showCreateRoom} onOpenChange={setShowCreateRoom}>
+              <DialogTrigger asChild>
+                <Button size="sm" className="bg-streaming-coral hover:bg-streaming-coral/90">
+                  <Icon name="Plus" size={16} className="mr-2" />
+                  Создать комнату
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Создать новую комнату</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="roomName">Название комнаты</Label>
+                    <Input
+                      id="roomName"
+                      value={roomName}
+                      onChange={(e) => setRoomName(e.target.value)}
+                      placeholder="Введите название комнаты..."
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="roomDescription">Описание (опционально)</Label>
+                    <Textarea
+                      id="roomDescription"
+                      value={roomDescription}
+                      onChange={(e) => setRoomDescription(e.target.value)}
+                      placeholder="Краткое описание комнаты..."
+                      rows={3}
+                    />
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="private"
+                      checked={isPrivateRoom}
+                      onCheckedChange={setIsPrivateRoom}
+                    />
+                    <Label htmlFor="private">Приватная комната</Label>
+                  </div>
+                  <div className="flex space-x-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => setShowCreateRoom(false)}
+                      className="flex-1"
+                    >
+                      Отмена
+                    </Button>
+                    <Button
+                      onClick={handleCreateRoom}
+                      disabled={!roomName.trim()}
+                      className="flex-1 bg-streaming-coral hover:bg-streaming-coral/90"
+                    >
+                      Создать
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
         </header>
 
@@ -75,12 +333,7 @@ const Index = () => {
             <Card className="bg-card border-streaming-border">
               <CardContent className="p-6">
                 <div className="relative bg-black rounded-lg overflow-hidden aspect-video mb-4">
-                  <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-streaming-coral/20 to-streaming-teal/20">
-                    <div className="text-center space-y-4">
-                      <Icon name="Play" size={64} className="text-white/60 mx-auto" />
-                      <p className="text-white/80">Загрузите видео для начала просмотра</p>
-                    </div>
-                  </div>
+                  {renderVideoPlayer()}
                   
                   {/* Video Controls Overlay */}
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4">
@@ -123,9 +376,18 @@ const Index = () => {
                     value={videoUrl}
                     onChange={(e) => setVideoUrl(e.target.value)}
                     className="flex-1"
+                    onKeyPress={(e) => e.key === 'Enter' && handleAddVideo()}
                   />
-                  <Button className="bg-streaming-coral hover:bg-streaming-coral/90">
-                    <Icon name="Plus" size={16} className="mr-2" />
+                  <Button 
+                    onClick={handleAddVideo}
+                    disabled={isLoadingVideo || !videoUrl.trim()}
+                    className="bg-streaming-coral hover:bg-streaming-coral/90"
+                  >
+                    {isLoadingVideo ? (
+                      <Icon name="Loader2" size={16} className="mr-2 animate-spin" />
+                    ) : (
+                      <Icon name="Plus" size={16} className="mr-2" />
+                    )}
                     Добавить
                   </Button>
                 </div>
@@ -147,10 +409,21 @@ const Index = () => {
                     </div>
                   </div>
                   <div className="flex space-x-2">
-                    <Button size="sm" variant="outline">
-                      <Icon name="Mic" size={14} className="mr-2" />
-                      Голос
+                    <Button 
+                      size="sm" 
+                      variant={isVoiceConnected ? "default" : "outline"}
+                      onClick={handleVoiceToggle}
+                      className={isVoiceConnected ? "bg-streaming-teal" : ""}
+                    >
+                      <Icon name={isMuted ? "MicOff" : "Mic"} size={14} className="mr-2" />
+                      {isVoiceConnected ? (isMuted ? 'Откл.' : 'Вкл.') : 'Голос'}
                     </Button>
+                    {currentRoom && (
+                      <Button size="sm" variant="outline" onClick={handleShareRoom}>
+                        <Icon name="Share" size={14} className="mr-2" />
+                        Поделиться
+                      </Button>
+                    )}
                     <Button size="sm" variant="outline">
                       <Icon name="Settings" size={14} />
                     </Button>
@@ -265,11 +538,50 @@ const Index = () => {
                         <Icon name="Users" size={14} className="text-muted-foreground" />
                         <span className="text-sm">{room.viewers}</span>
                       </div>
-                      <Button size="sm" variant="outline">Войти</Button>
+                      <Button 
+                        size="sm" 
+                        variant="outline"
+                        onClick={() => handleJoinRoom(room.id, room.name)}
+                      >
+                        Войти
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
               ))}
+              
+              {/* Voice Users Display */}
+              {voiceUsers.length > 0 && (
+                <Card className="bg-card border-streaming-border">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg flex items-center space-x-2">
+                      <Icon name="Volume2" size={20} />
+                      <span>В голосовом чате ({voiceUsers.length})</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {voiceUsers.map((user) => (
+                      <div key={user.id} className="flex items-center space-x-3 p-2 rounded-lg bg-muted/50">
+                        <div className="relative">
+                          <div className="text-lg">🎤</div>
+                          {user.isSpeaking && (
+                            <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-medium">{user.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {user.isMuted ? 'Микрофон выключен' : 'В эфире'}
+                          </p>
+                        </div>
+                        {user.isMuted && (
+                          <Icon name="MicOff" size={14} className="text-muted-foreground" />
+                        )}
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
             </div>
           </TabsContent>
           
